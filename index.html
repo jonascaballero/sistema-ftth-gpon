@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistema de Trazado FTTH GPON - Arroyo Seco</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: #f3f5f7; }
+    header { background: #19385f; color: white; padding: 17px 22px; }
+    h1 { margin: 0 0 5px; font-size: 25px; }
+    header p { margin: 0; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 18px; }
+    button { cursor: pointer; padding: 9px 13px; border: 1px solid #aeb6c0; background: white; border-radius: 5px; }
+    button:hover { background: #e6eef8; }
+    #estado { font-weight: 600; }
+    #map { height: calc(100vh - 160px); min-height: 430px; width: 100%; }
+    #mensaje { padding: 7px 18px; color: #334155; font-size: 13px; }
+    .leyenda { background: white; padding: 9px 12px; line-height: 1.7; border-radius: 5px; box-shadow: 0 1px 7px #7777; }
+    .muestra { display: inline-block; width: 14px; height: 10px; margin-right: 6px; border: 1px solid #333; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sistema de Trazado FTTH GPON</h1>
+    <p>Prototipo - Arroyo Seco, Villa Elisa</p>
+  </header>
+  <div class="toolbar">
+    <button id="reiniciar">Reiniciar puntos</button>
+    <button id="centrar">Centrar en Arroyo Seco</button>
+    <span id="estado">Seleccione la OLT en el mapa</span>
+  </div>
+  <div id="map"></div>
+  <div id="mensaje">Cargando las capas geográficas…</div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // Mapa base. El zoom se ajusta al límite real cuando se carga.
+    const map = L.map('map').setView([-25.37, -57.59], 13);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+    }).addTo(map);
+
+    let capaLimites = null;
+    let capaCalles = null;
+    let capaCasas = null;
+    let origen = null;
+    let destino = null;
+    let marcadorOrigen = null;
+    let marcadorDestino = null;
+    let linea = null;
+
+    const estado = document.getElementById('estado');
+    const mensaje = document.getElementById('mensaje');
+
+    async function leerGeoJSON(ruta) {
+      const respuesta = await fetch(ruta);
+      if (!respuesta.ok) throw new Error(`${ruta}: HTTP ${respuesta.status}`);
+      return await respuesta.json();
+    }
+
+    async function cargarCapas() {
+      const capas = [
+        { ruta: 'Capas/Limites.geojson', nombre: 'Límite de Arroyo Seco', estilo: { color: '#222222', weight: 3, fillOpacity: 0 } },
+        { ruta: 'Capas/Calles.geojson', nombre: 'Calles del barrio', estilo: { color: '#138a36', weight: 3 } },
+        { ruta: 'Capas/Casas.geojson', nombre: 'Casas y edificios', estilo: { color: '#222222', weight: 1, fillColor: '#ff8c00', fillOpacity: 0.9 } }
+      ];
+      const control = {};
+      const errores = [];
+      for (const item of capas) {
+        try {
+          const datos = await leerGeoJSON(item.ruta);
+          const capa = L.geoJSON(datos, { style: item.estilo }).addTo(map);
+          control[item.nombre] = capa;
+          if (item.nombre === 'Límite de Arroyo Seco') capaLimites = capa;
+          if (item.nombre === 'Calles del barrio') capaCalles = capa;
+          if (item.nombre === 'Casas y edificios') capaCasas = capa;
+        } catch (error) {
+          console.error('Error cargando capa:', error);
+          errores.push(item.ruta);
+        }
+      }
+      if (Object.keys(control).length) L.control.layers(null, control, { collapsed: false }).addTo(map);
+      centrarMapa();
+      mensaje.textContent = errores.length
+        ? 'No se pudieron cargar: ' + errores.join(', ') + '. Revisá los nombres, la carpeta Capas y la consola (F12).'
+        : 'Capas cargadas. Hacé clic en el mapa para elegir la OLT y luego la CTO.';
+    }
+
+    function centrarMapa() {
+      const capa = capaLimites || capaCalles || capaCasas;
+      if (capa && capa.getBounds().isValid()) {
+        map.fitBounds(capa.getBounds(), { padding: [25, 25] });
+      }
+    }
+
+    function reiniciar() {
+      if (marcadorOrigen) map.removeLayer(marcadorOrigen);
+      if (marcadorDestino) map.removeLayer(marcadorDestino);
+      if (linea) map.removeLayer(linea);
+      origen = destino = marcadorOrigen = marcadorDestino = linea = null;
+      estado.textContent = 'Seleccione la OLT en el mapa';
+    }
+
+    map.on('click', function(evento) {
+      if (!origen) {
+        origen = evento.latlng;
+        marcadorOrigen = L.marker(origen).addTo(map).bindPopup('OLT - Origen').openPopup();
+        estado.textContent = 'Seleccione la CTO en el mapa';
+      } else if (!destino) {
+        destino = evento.latlng;
+        marcadorDestino = L.marker(destino).addTo(map).bindPopup('CTO - Destino');
+        linea = L.polyline([origen, destino], { color: '#2563eb', weight: 4, dashArray: '8, 7' }).addTo(map);
+        const metros = map.distance(origen, destino);
+        estado.textContent = 'Distancia directa OLT–CTO: ' + metros.toFixed(1) + ' m';
+        mensaje.textContent = 'La línea azul es distancia directa, NO una ruta por calles. El trazado óptimo se implementará después.';
+      } else {
+        estado.textContent = 'Ya seleccionaste OLT y CTO. Usá «Reiniciar puntos» para empezar de nuevo.';
+      }
+    });
+
+    document.getElementById('reiniciar').addEventListener('click', reiniciar);
+    document.getElementById('centrar').addEventListener('click', centrarMapa);
+
+    const leyenda = L.control({ position: 'bottomright' });
+    leyenda.onAdd = function() {
+      const div = L.DomUtil.create('div', 'leyenda');
+      div.innerHTML = '<strong>Referencias</strong><br><span class="muestra" style="background:#ff8c00"></span> Casas<br><span class="muestra" style="background:#138a36"></span> Calles<br><span class="muestra" style="background:#fff;border:2px solid #222"></span> Límite';
+      return div;
+    };
+    leyenda.addTo(map);
+    cargarCapas();
+  </script>
+</body>
+</html>
